@@ -1,0 +1,201 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>AI Agent - SysOpt</title>
+    <link rel="stylesheet" href="/static/css/style.css">
+</head>
+<body>
+    <div class="container">
+        <header>
+            <h1>AI Security Agent</h1>
+            <p>Intelligent system analysis and recommendations</p>
+        </header>
+
+        <nav>
+            <ul>
+                <li><a href="/">Dashboard</a></li>
+                <li><a href="/scan">Scans</a></li>
+                <li><a href="/agent">AI Agent</a></li>
+            </ul>
+        </nav>
+
+        <main>
+            <div class="card">
+                <h3>💬 Ask Security Questions</h3>
+                <div class="chat-container">
+                    <div id="chat-messages" class="chat-messages">
+                        <div class="message bot-message">
+                            <strong>AI Agent:</strong> Hello! I'm your security assistant. Ask me about system vulnerabilities, optimization tips, or security best practices.
+                        </div>
+                    </div>
+                    <div class="chat-input">
+                        <form id="chat-form">
+                            <input type="text" id="user-input" placeholder="Ask about security..." required>
+                            <button type="submit">Send</button>
+                        </form>
+                    </div>
+                </div>
+            </div>
+
+            <div class="card">
+                <h3>Quick Security Prompts</h3>
+                <div class="quick-prompts">
+                    <button onclick="sendQuickPrompt('What are the security risks of running too many systemd services?')">Security risks of many services</button>
+                    <button onclick="sendQuickPrompt('How can I optimize my system memory usage?')">Memory optimization tips</button>
+                    <button onclick="sendQuickPrompt('What ports should I close for better security?')">Port security recommendations</button>
+                    <button onclick="sendQuickPrompt('How to secure autostart applications?')">Autostart security</button>
+                </div>
+            </div>
+        </main>
+    </div>
+
+    <script>
+        async function sendQuickPrompt(prompt) {
+            document.getElementById('user-input').value = prompt;
+            await sendMessage(prompt);
+        }
+
+        async function sendMessage(userMessage) {
+            const chatMessages = document.getElementById('chat-messages');
+            
+            // Add user message
+            const userDiv = document.createElement('div');
+            userDiv.className = 'message user-message';
+            userDiv.innerHTML = `<strong>You:</strong> ${userMessage}`;
+            chatMessages.appendChild(userDiv);
+
+            // Clear input
+            document.getElementById('user-input').value = '';
+
+            // Show loading
+            const loadingDiv = document.createElement('div');
+            loadingDiv.className = 'message bot-message';
+            loadingDiv.id = 'loading-message';
+            loadingDiv.innerHTML = '<strong>AI Agent:</strong> Thinking...';
+            chatMessages.appendChild(loadingDiv);
+
+            chatMessages.scrollTop = chatMessages.scrollHeight;
+
+            try {
+                const response = await fetch('/api/agent/prompt', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                    },
+                    body: JSON.stringify({ prompt: userMessage })
+                });
+
+                const data = await response.json();
+                
+                // Remove loading message
+                document.getElementById('loading-message').remove();
+
+                // Add bot response
+                const botDiv = document.createElement('div');
+                botDiv.className = 'message bot-message';
+                botDiv.innerHTML = `<strong>AI Agent:</strong> ${data.response || data.error || JSON.stringify(data)}`;
+                chatMessages.appendChild(botDiv);
+
+            } catch (error) {
+                // Remove loading message
+                document.getElementById('loading-message').remove();
+                
+                // Add error message
+                const errorDiv = document.createElement('div');
+                errorDiv.className = 'message bot-message error';
+                errorDiv.innerHTML = `<strong>AI Agent:</strong> Error: ${error.message}`;
+                chatMessages.appendChild(errorDiv);
+            }
+
+            chatMessages.scrollTop = chatMessages.scrollHeight;
+        }
+
+        document.getElementById('chat-form').addEventListener('submit', async (e) => {
+            e.preventDefault();
+            const userInput = document.getElementById('user-input');
+            const message = userInput.value.trim();
+            if (message) {
+                await sendMessage(message);
+            }
+        });
+    </script>
+
+    <style>
+        .chat-container {
+            border: 1px solid #ddd;
+            border-radius: 8px;
+            height: 400px;
+            display: flex;
+            flex-direction: column;
+        }
+
+        .chat-messages {
+            flex: 1;
+            padding: 1rem;
+            overflow-y: auto;
+            background: #f8f9fa;
+        }
+
+        .message {
+            margin-bottom: 1rem;
+            padding: 0.5rem;
+            border-radius: 5px;
+        }
+
+        .user-message {
+            background: #e3f2fd;
+            margin-left: 20%;
+        }
+
+        .bot-message {
+            background: #f5f5f5;
+            margin-right: 20%;
+        }
+
+        .bot-message.error {
+            background: #ffebee;
+            color: #c62828;
+        }
+
+        .chat-input {
+            padding: 1rem;
+            border-top: 1px solid #ddd;
+            background: white;
+        }
+
+        .chat-input form {
+            display: flex;
+            gap: 0.5rem;
+        }
+
+        .chat-input input {
+            flex: 1;
+            padding: 0.5rem;
+            border: 1px solid #ddd;
+            border-radius: 5px;
+        }
+
+        .quick-prompts {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+            gap: 1rem;
+        }
+
+        .quick-prompts button {
+            background: #764ba2;
+            color: white;
+            border: none;
+            padding: 0.75rem;
+            border-radius: 5px;
+            cursor: pointer;
+            text-align: center;
+        }
+
+        .quick-prompts button:hover {
+            background: #667eea;
+        }
+    </style>
+</body>
+</html>

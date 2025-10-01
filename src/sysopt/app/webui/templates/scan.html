@@ -1,0 +1,64 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Scans - SysOpt</title>
+    <link rel="stylesheet" href="/static/css/style.css">
+</head>
+<body>
+    <div class="container">
+        <header>
+            <h1>System Scans</h1>
+        </header>
+
+        <nav>
+            <ul>
+                <li><a href="/">Dashboard</a></li>
+                <li><a href="/scan">Scans</a></li>
+                <li><a href="/agent">AI Agent</a></li>
+            </ul>
+        </nav>
+
+        <main>
+            <div class="scan-sections">
+                <div class="card">
+                    <h3>RAM & CPU Analysis</h3>
+                    <button onclick="runScan('ram', 10)">Run RAM Scan (Top 10)</button>
+                    <div id="ram-results" class="results"></div>
+                </div>
+
+                <div class="card">
+                    <h3>Storage Analysis</h3>
+                    <button onclick="runScan('storage')">Run Storage Scan</button>
+                    <div id="storage-results" class="results"></div>
+                </div>
+
+                <div class="card">
+                    <h3>Autostart Services</h3>
+                    <button onclick="runScan('autorun')">Check Autostart</button>
+                    <div id="autorun-results" class="results"></div>
+                </div>
+
+                <div class="card">
+                    <h3>Port Scan</h3>
+                    <button onclick="runScan('ports')">Scan Open Ports</button>
+                    <div id="ports-results" class="results"></div>
+                </div>
+
+                <div class="card">
+                    <h3>CVE Check</h3>
+                    <form onsubmit="runCVECheck(event)">
+                        <input type="text" id="package-name" placeholder="Package name (e.g., openssl)" required>
+                        <input type="text" id="package-version" placeholder="Version (e.g., 1.1.1)" required>
+                        <button type="submit">Check CVE</button>
+                    </form>
+                    <div id="cve-results" class="results"></div>
+                </div>
+            </div>
+        </main>
+    </div>
+
+    <script src="/static/js/app.js"></script>
+</body>
+</html>

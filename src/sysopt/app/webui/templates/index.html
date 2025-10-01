@@ -1,0 +1,50 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>SysOpt - System Scanner</title>
+    <link rel="stylesheet" href="/static/css/style.css"> 
+</head>
+<body>
+    <div class="container">
+        <header>
+            <h1>SysOpt System Scanner</h1>
+            <p>Security and Optimization Analysis Tool</p>
+        </header>
+
+        <nav>
+            <ul>
+                <li><a href="/">Dashboard</a></li>
+                <li><a href="/scan">Scans</a></li>
+                <li><a href="/agent">AI Agent</a></li>
+            </ul>
+        </nav>
+
+        <main>
+            <div class="dashboard">
+                <div class="card">
+                    <h3>Quick Stats</h3>
+                    <ul>
+                        <li>System Load: <span id="cpu-load">Loading...</span></li>
+                        <li>Memory Usage: <span id="memory-usage">Loading...</span></li>
+                        <li>Open Ports: <span id="open-ports">Loading...</span></li>
+                        <li>Autostart Services: <span id="autostart-count">Loading...</span></li>
+                    </ul>
+                </div>
+
+                <div class="card">
+                    <h3>Recent Scans</h3>
+                    <ul>
+                        <li>Last RAM Scan: <span id="last-ram-scan">Never</span></li>
+                        <li>Last Port Scan: <span id="last-port-scan">Never</span></li>
+                        <li>Last CVE Check: <span id="last-cve-check">Never</span></li>
+                    </ul>
+                </div>
+            </div>
+        </main>
+    </div>
+
+    <script src="/static/js/app.js"></script>
+</body>
+</html>

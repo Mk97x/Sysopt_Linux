@@ -6,8 +6,8 @@ from typing import Dict, Any
 
 load_dotenv()
 
-LLM_API_KEY = os.getenv("LLM_API_KEY")  
-IP = os.getenv("IP")               
+LLM_API_KEY = os.getenv("LLM_API_KEY")
+IP = os.getenv("IP")
 
 class LLMClient:
     """
@@ -17,7 +17,7 @@ class LLMClient:
     Supports optional authentication via Bearer token.
     """
 
-    def __init__(self, api_url: str = None, api_key: str = None, workspace_slug: str = "default"):
+    def __init__(self, api_url: str = None, api_key: str = None, workspace_slug: str = "test"):
         """
         Initialize the LLMClient.
 
@@ -84,7 +84,7 @@ class LLMClient:
         except Exception as e:
             return {"error": f"Unexpected error: {e}"}
 
-    def run_prompt(self, prompt: str, mode: str = "query") -> Dict[str, Any]:
+    def run_prompt(self, prompt: str, mode: str = "chat") -> Dict[str, Any]:
         """
         Send a message to the AnythingLLM workspace and retrieve the response.
 
@@ -108,7 +108,7 @@ class LLMClient:
         response = None  # <- Definiere `response` außerhalb des try-Blocks
 
         try:
-            response = requests.post(self.api_url, json=payload, headers=headers, timeout=30)
+            response = requests.post(self.api_url, json=payload, headers=headers, timeout=120)
             response.raise_for_status()
 
             # DEBUG: Print the raw response before parsing JSON
