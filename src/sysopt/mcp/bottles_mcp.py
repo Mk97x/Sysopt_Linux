@@ -1,22 +1,12 @@
 #!/usr/bin/env python3
 """
-Bottles-MCP-Server v2
-
-A Model Context Protocol (MCP) server for automating Wine bottle setup via Bottles CLI.
-Works exclusively with Flatpak-based Bottles installation (com.usebottles.bottles).
-
-Features:
-  - Create new gaming bottles with automated dependency detection
-  - Scan Windows executables for required DLL dependencies using WINEDEBUG
-  - Install dependencies via winetricks (standard verbs) or bottles-cli (GPU components)
-  - Analyze dependencies without installation
-  - Install dependencies into existing bottles
-
-Current limitations:
-  - Cannot detect dependencies if the target executable fails to run
-  - Interactive platform installers (Steam, Ubisoft Connect) must be set up manually first
-  - GPU acceleration may be limited inside Flatpak sandbox
-  - Only valid winetricks verbs and bottles-cli components are supported (ubisoft launcher and dx11 seems to make trouble)
+Bottles-MCP-Server v4
+- Deterministic EXE enumeration & scoring (now scoped to subpath)
+- Candidates limited to relevant game folder 
+- Shortcut creation via bottles-cli in correct context (cwd=drive_c + WINEPREFIX)
+- New tool: bottles_folder_installer for pre-installed folders
+- Robust error handling and logging
+- Live Feedback via Ollama API
 """
 
 from __future__ import annotations
@@ -26,16 +16,25 @@ import subprocess
 import json
 import re
 import threading
+import time
+import shutil
+import difflib
 from pathlib import Path
-from typing import Optional, Set, List, Dict
+from typing import Optional, Set, List, Dict, Any
+from shutil import which
+from collections import defaultdict
 
+from contextlib import contextmanager
 
-from fastapi import FastAPI, Request
+from fastapi import FastAPI, Request, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 
-# ==============================================================================
-# CONFIGURATION
-# ==============================================================================
+from .dll_map import DLL_MAP
+from .dep_scanner import scan_deps_static, scan_deps_wine
+
+from .bottles_handler import create_bottle, copy_folder_to_bottle, wait_until_wineserver_idle, install_dep, create_shortcut_in_bottle, log_status, BOTTLE_STATUS, prefix_path, WINE_CMD, WINEDUMP
+from .exe_handler import probe_pe_metadata, enumerate_and_score_exes
+from .iso_handler import find_setup_exe_in_iso, run_setup_in_bottle, mount_iso
 
 app = FastAPI()
 app.add_middleware(
@@ -46,534 +45,311 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Flatpak command wrappers - these ensure commands run inside the Bottles Flatpak container
-BOTTLES_CLI = ["flatpak", "run", "--command=bottles-cli", "com.usebottles.bottles"]
-WINE_CMD = ["flatpak", "run", "--command=wine", "com.usebottles.bottles"]
-WINETRICKS = ["flatpak", "run", "--command=winetricks", "com.usebottles.bottles"]
-
-# Base directory where Bottles stores wine prefixes
-PREFIX_BASE = "/mnt/data"
-
-# ==============================================================================
-# DLL TO COMPONENT MAPPING
-# ==============================================================================
-
-DLL_MAP: Dict[str, str] = {
-    """
-    Maps Windows DLL filenames to installable winetricks verbs or bottles-cli components.
-    
-    IMPORTANT NOTES:
-    - Only includes verbs that actually exist in winetricks (verified Jan 2025)
-    - GPU components (dxvk, vkd3d) are installed via bottles-cli, not winetricks
-    - d3d11.dll maps to dxvk (not d3dx11, which doesn't exist as a verb)
-    - Platform loaders (Steam, Ubisoft) map to their respective platform components
-    - If a DLL has no mapping, it will be ignored during scanning
-    """
-    
-    # DirectX/Graphics - DXVK handles d3d11/d3d12 translation to Vulkan
-    "d3d9.dll": "d3dx9",
-    "d3d10.dll": "d3dx10",
-    "d3d11.dll": "dxvk",
-    "d3d11_1.dll": "dxvk",
-    "d3d11_2.dll": "dxvk",
-    "d3d11_3.dll": "dxvk",
-    "d3d11_4.dll": "dxvk",
-    "d3d12.dll": "vkd3d",
-    "d3dcompiler_43.dll": "d3dcompiler_43",
-    "d3dcompiler_47.dll": "d3dcompiler_47",
-    "dxgi.dll": "dxvk",
-    
-    # Input & Audio
-    "xinput1_3.dll": "xinput",
-    "xinput1_4.dll": "xinput",
-    "dinput8.dll": "dinput",
-    "openal32.dll": "openal",
-    "fmod.dll": "fmod",
-    "fmodex.dll": "fmod",
-    
-    # Video Codecs
-    "binkw32.dll": "bink",
-    "binkw64.dll": "bink",
-    "bink2w32.dll": "bink2",
-    "bink2w64.dll": "bink2",
-    
-    # Physics & Acceleration
-    "physxloader.dll": "physx",
-    "physx3_x86.dll": "physx",
-    "physx3_x64.dll": "physx",
-    
-    # GPU/VR
-    "openvr_api.dll": "openvr",
-    "nvapi.dll": "dxvk-nvapi",
-    
-    # Platform/Store Loaders
-    "ubiorbitapi_r2.dll": "ubisoftconnect",
-    "uplay_r1.dll": "ubisoftconnect",
-    "uplay_r1_loader.dll": "ubisoftconnect",
-    
-    # .NET Runtime
-    "mscoree.dll": "dotnet40",
-    "clr.dll": "dotnet40",
-    "system.dll": "dotnet40",
-    
-    # Visual C++ Runtimes
-    "msvcp140.dll": "vcrun2019",
-    "vcruntime140.dll": "vcrun2019",
-    "msvcp140_1.dll": "vcrun2019",
-    "msvcp140_2.dll": "vcrun2019",
-    "vcomp140.dll": "vcrun2019",
-    "vcruntime140_1.dll": "vcrun2019",
-    "vcruntime150.dll": "vcrun2022",
-    "msvcp150.dll": "vcrun2022",
-    "vcomp150.dll": "vcrun2022",
-    "msvcp60.dll": "vcrun6",
-    "msvcrt.dll": "vcrun6",
-    "msvcp71.dll": "vcrun2003",
-    "msvcp80.dll": "vcrun2005",
-    "msvcp90.dll": "vcrun2008",
-    "msvcp100.dll": "vcrun2010",
-    "msvcp110.dll": "vcrun2012",
-    "msvcp120.dll": "vcrun2013",
-    
-    # System Libraries
-    "mfc42.dll": "mfc42",
-    "msxml3.dll": "msxml3",
-    "msxml6.dll": "msxml6",
-    "quartz.dll": "quartz",
-    "riched20.dll": "riched20",
-    "tahoma.ttf": "tahoma",
-    "arial.ttf": "corefonts",
-    "winhttp.dll": "winhttp",
-    "wininet.dll": "wininet",
-    "wsock32.dll": "wsock32",
-    "iphlpapi.dll": "iphlpapi",
-}
-
-# ==============================================================================
-# HELPER FUNCTIONS
-# ==============================================================================
-
-def map_dll(dll: str) -> Optional[str]:
-    """
-    Look up a DLL filename in the mapping table.
-    
-    Args:
-        dll: Windows DLL filename (e.g., "d3d11.dll")
-        
-    Returns:
-        Component name if mapped, None otherwise
-    """
-    return DLL_MAP.get(dll.lower())
-
-
-def register_bottle_in_gui(bottle_name: str, bottle_path: str) -> None:
-    registry_dir = Path.home() / ".var/app/com.usebottles.bottles/data/bottles/bottles"
-    registry_dir.mkdir(parents=True, exist_ok=True)
-
-    payload = {
-        "name": bottle_name,
-        "path": bottle_path,
-        "environment": "gaming",
-        "runner": "soda-7.0-9",
-        "dxvk": True,
-        "vkd3d": False,
-        "dxvk_nvapi": False,
-        "arch": "win64"
+# ------------------------------------------------------------------
+# Endpoints
+# ------------------------------------------------------------------
+@app.get("/status/{bottle_name}")
+async def get_bottle_status(bottle_name: str):
+    data = BOTTLE_STATUS[bottle_name]
+    candidates = data.get("candidates", [])
+    candidates_short = [
+        {"path": c.get("path"), "score": c.get("score"), "product_name": c.get("product_name"), "size": c.get("size"), "mtime": c.get("mtime")}
+        for c in candidates
+    ]
+    return {
+        "bottle": bottle_name,
+        "status": data.get("status", "idle"),
+        "log": data.get("log", []),
+        "candidates": candidates_short
     }
-    (registry_dir / f"{bottle_name}.json").write_text(json.dumps(payload, indent=2))
 
-def extract_dlls_static(exe_path: str) -> List[str]:
-    if not os.path.isfile(exe_path):
-        raise FileNotFoundError(exe_path)
-    try:
-        result = subprocess.run(
-            ["flatpak", "run", "--command=winedump", "com.usebottles.bottles",
-             "-j", exe_path],
-            capture_output=True, text=True, timeout=30
-        )
-        if result.returncode != 0:
-            raise RuntimeError(result.stderr.strip())
-        # DLL Name: xxxx.dll
-        return re.findall(r"(?i)DLL Name:\s+([^\s]+\.dll)", result.stdout)
-    except Exception as e:
-        raise RuntimeError(f"winedump failed: {e}")
+@app.get("/candidates/{bottle_name}")
+async def get_candidates(bottle_name: str):
+    if not bottle_name:
+        raise HTTPException(status_code=400, detail="bottle_name required")
 
+    subpath = BOTTLE_STATUS[bottle_name].get("subpath")
+    existing = BOTTLE_STATUS[bottle_name].get("candidates")
+    if existing:
+        trimmed = [
+            {"path": c["path"], "score": c["score"], "product_name": c.get("product_name", ""), "size": c.get("size"), "mtime": c.get("mtime")}
+            for c in existing
+        ]
+        return {"bottle": bottle_name, "candidates": trimmed}
 
+    candidates = enumerate_and_score_exes(bottle_name, top_n=10, subpath=subpath)
+    BOTTLE_STATUS[bottle_name]["candidates"] = candidates
+    log_status(bottle_name, f"[MCP] Enumerated {len(candidates)} EXE candidates (subpath={subpath})")
+    trimmed = [
+        {"path": c["path"], "score": c["score"], "product_name": c.get("product_name", ""), "size": c.get("size"), "mtime": c.get("mtime")}
+        for c in candidates
+    ]
+    return {"bottle": bottle_name, "candidates": trimmed}
 
-def analyze_dependencies_static(program_path: str) -> Dict:
-    try:
-        dlls = extract_dlls_static(program_path)
-        deps = {map_dll(d) for d in dlls}
-        deps.discard(None)
-        return {
-            "success": True,
-            "dependencies": sorted(deps),
-            "dlls": dlls
-        }
-    except Exception as e:
-        return {"success": False, "error": str(e)}
+@app.post("/agent/choose_exe")
+async def agent_choose_exe(payload: Request):
+    data = await payload.json()
+    bottle = data.get("bottle")
+    exe_path = data.get("exe_path")
+    create_shortcut = data.get("create_shortcut", False)
+    create = data.get("create_bottle", False)
 
+    if not bottle or not exe_path:
+        raise HTTPException(status_code=400, detail="bottle and exe_path required")
 
-def prefix_path_for(bottle_name: str) -> str:
-    """
-    Compute the wine prefix path for a given bottle name.
-    
-    Args:
-        bottle_name: Name of the Bottles bottle
-        
-    Returns:
-        Full path to the WINEPREFIX directory
-    """
-    return os.path.join(PREFIX_BASE, bottle_name)
-
-
-def create_bottle(bottle_name: str) -> bool:
-    """
-    Create a new gaming bottle using bottles-cli.
-    
-    Args:
-        bottle_name: Name for the new bottle
-        
-    Returns:
-        True if bottle creation succeeded, False otherwise
-    """
-    print(f"[MCP] Creating bottle: {bottle_name}")
-    try:
-        cmd = BOTTLES_CLI + ["new", "--bottle-name", bottle_name, "--environment", "gaming"]
-        register_bottle_in_gui(bottle_name, prefix_path_for(bottle_name))
-        result = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
-        print(f"[DEBUG] create_bottle stdout: {result.stdout[:200]}")
-        print(f"[DEBUG] create_bottle stderr: {result.stderr[:200]}")
-        return result.returncode == 0
-    except Exception as e:
-        print(f"[ERROR] create_bottle failed: {e}")
-        return False
-
-
-def install_bottle_dependency(bottle_name: str, dependency: str) -> bool:
-    """
-    Install a single dependency into a bottle.
-    
-    Uses bottles-cli for GPU-accelerated components (dxvk, vkd3d, etc.)
-    and winetricks for standard verb packages (vcrun*, d3dx*, etc.).
-    
-    Args:
-        bottle_name: Name of the target bottle
-        dependency: Component to install (e.g., "dxvk", "vcrun2019")
-        
-    Returns:
-        True if installation succeeded or component was already installed,
-        False if installation failed
-    """
-    print(f"[MCP] Installing '{dependency}' into '{bottle_name}'")
-    
-    # Components that must be installed via bottles-cli (GPU-related)
-    bottles_cli_components = {"dxvk", "vkd3d", "dxvk-nvapi"}
-    
-    try:
-        env = os.environ.copy()
-        env["WINEPREFIX"] = prefix_path_for(bottle_name)
-        
-        if dependency in bottles_cli_components:
-            print(f"[MCP]   → Using bottles-cli")
-            cmd = BOTTLES_CLI + [
-                                "add",
-                                "-b", bottle_name,
-                                "-n", dependency,
-                                "-p", "dummy"          
-                            ]
-            result = subprocess.run(cmd, env=env, capture_output=True, text=True, timeout=600)
-        else:
-            print(f"[MCP]   → Using winetricks")
-            cmd = WINETRICKS + [dependency]
-            result = subprocess.run(cmd, env=env, capture_output=True, text=True, timeout=600)
-            
-            # If component was already installed, that still counts as success
-            if "already installed" in result.stdout:
-                print(f"[MCP]   ✓ {dependency} already installed")
-                return True
-        
-        success = result.returncode == 0
-        if success:
-            print(f"[MCP]   ✓ {dependency} installed successfully")
-        else:
-            print(f"[MCP]   ✗ {dependency} failed (rc={result.returncode})")
-            if result.stderr:
-                print(f"[DEBUG]   stderr: {result.stderr[:300]}")
-        
-        return success
-        
-    except subprocess.TimeoutExpired:
-        print(f"[ERROR] {dependency} timeout (installation took too long)")
-        return False
-    except Exception as e:
-        print(f"[ERROR] {dependency} exception: {e}")
-        return False
-
-
-def run_wine_dependency_solver(program_path: str, bottle_name: str, timeout: int = 10) -> Dict:
-    """
-    Execute a Windows program with WINEDEBUG enabled to capture DLL load attempts.
-    
-    This is the core scanning mechanism: Wine logs all DLL load attempts to stderr,
-    including which DLLs were successfully loaded and which failed to load.
-    We parse these logs to determine what components the program needs.
-    
-    IMPORTANT: This can only work if the program starts successfully. If the program
-    fails to initialize (missing critical DLLs, incompatible Wine version, etc.),
-    no DLLs will be logged and the scan will return empty results.
-    
-    Args:
-        program_path: Full path to the Windows executable
-        bottle_name: Name of the bottle to scan in
-        timeout: Maximum seconds to let the program run (default 10)
-        
-    Returns:
-        Dictionary with keys:
-          - success (bool): Whether scanning succeeded
-          - dependencies (list): Detected component requirements
-          - missing_dlls (list): Raw DLL names that failed to load
-          - error (str): Error message if success is False
-    """
-    print(f"[MCP] WINEDEBUG scanning: {program_path}")
-    if not os.path.isfile(program_path):
-        return {"success": False, "error": f"File not found: {program_path}"}
-
-    env = os.environ.copy()
-    env["WINEDEBUG"] = "+loaddll"
-    env["WINEPREFIX"] = prefix_path_for(bottle_name)
-    # Software rendering fallbacks for GPU-restricted environments
-    env["LIBGL_ALWAYS_SOFTWARE"] = "1"
-    env["GALLIUM_DRIVER"] = "llvmpipe"
-    env["MESA_GL_VERSION_OVERRIDE"] = "3.3"
-
-    try:
-        proc = subprocess.Popen(
-            WINE_CMD + [program_path],
-            env=env,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            text=True
-        )
-
+    def bg_scan():
         try:
-            _, stderr = proc.communicate(timeout=timeout)
-        except subprocess.TimeoutExpired:
-            proc.kill()
-            _, stderr = proc.communicate()
+            log_status(bottle, f"[MCP] Processing EXE: {exe_path} (create_shortcut={create_shortcut})")
+            if create and not prefix_path(bottle).exists():
+                if not create_bottle(bottle):
+                    log_status(bottle, "[MCP] create_bottle failed")
+                    return
 
-        # Parse Wine debug output for DLL loading info
-        # Format: "load dll ... : <dllname>"
-        # Match any line mentioning a dll load or failure
-        dll_patterns = [
-        r"load(?:ed)?\s+library\s+['\"]?([A-Za-z0-9_\-\.]+\.dll)['\"]?",  # loaded library 'X.dll'
-        r"Loaded module\s+['\"]?([A-Za-z0-9_\-\.]+\.dll)['\"]?",        # Loaded module X.dll
-        r"err:module:.*?\s+['\"]?([A-Za-z0-9_\-\.]+\.dll)['\"]?",      # err:module... X.dll
-        r"Could not load\s+['\"]?([A-Za-z0-9_\-\.]+\.dll)['\"]?",      # Could not load X.dll
-        r"failed to (?:open|load).*?['\"]?([A-Za-z0-9_\-\.]+\.dll)['\"]?",
-        r"cannot open.*?['\"]?([A-Za-z0-9_\-\.]+\.dll)['\"]?",
-]
+            candidates = enumerate_and_score_exes(bottle, top_n=50, subpath=BOTTLE_STATUS[bottle].get("subpath"))
+            BOTTLE_STATUS[bottle]["candidates"] = candidates
 
-        loaded = set()
-        missing = set()
+            exe_p = Path(exe_path)
+            if not exe_p.exists():
+                matched = next((Path(c["path"]) for c in candidates if Path(c["path"]).name.lower() == exe_p.name.lower()), None)
+                if not matched:
+                    log_status(bottle, f"[ERROR] EXE not found: {exe_path}")
+                    return
+                exe_p = matched
+                log_status(bottle, f"[MCP] Matched to: {exe_p}")
 
-        for pat in dll_patterns:
-            found = re.findall(pat, stderr, re.I)
-            for dll in found:
-                if "err:" in pat or "failed" in pat or "cannot" in pat or "Could not" in pat:
-                    missing.add(dll)
-                else:
-                    loaded.add(dll)
+            res = scan_deps_static(str(exe_p), winedump_cmd=WINEDUMP)
+            deps = set(res.get("dependencies", []))
+            if not deps:
+                log_status(bottle, "[MCP] Static scan found no deps, falling back to wine runtime scan")
+                res2 = scan_deps_wine(program=str(exe_p), wineprefix=str(prefix_path(bottle)), wine_cmd=WINE_CMD, timeout=20)
+                deps = set(res2.get("dependencies", []))
 
+            if deps:
+                log_status(bottle, f"[MCP] Installing {len(deps)} dependencies")
+                for d in sorted(deps):
+                    install_dep(bottle, d)
+            else:
+                log_status(bottle, "[MCP] No dependencies detected")
 
-        # Map raw DLL names to installable components
-        deps: Set[str] = set()
-        for d in loaded | missing:
-            mapped = map_dll(d)
-            if mapped:
-                deps.add(mapped)
+            if create_shortcut:
+                create_shortcut_in_bottle(bottle, exe_p)
 
-        print(f"[MCP] Scan found {len(deps)} dependencies: {sorted(deps)}")
-        return {
-            "success": True,
-            "dependencies": sorted(deps),
-            "missing_dlls": sorted(missing)
-        }
-    except Exception as e:
-        return {"success": False, "error": str(e)}
+            log_status(bottle, f"[MCP] Completed processing for {exe_p}")
 
+        except Exception as e:
+            log_status(bottle, f"[FATAL] Exception in choose_exe: {e}")
 
-def sanitize_bottle_env(bottle_name: str) -> None:
-    """
-    Perform minimal sanitization on a newly created bottle.
-    
-    Current implementation:
-      - wineboot --repair: Fixes any initialization issues in the Wine prefix
-      
-    This is kept minimal to avoid corrupting the bottle. Heavy-handed modifications
-    (like forcing specific runners or installing unnecessary components) are avoided.
-    
-    Args:
-        bottle_name: Name of the bottle to sanitize
-    """
-    print(f"[MCP] Sanitizing bottle: {bottle_name}")
-    env = os.environ.copy()
-    env["WINEPREFIX"] = prefix_path_for(bottle_name)
+    threading.Thread(target=bg_scan, daemon=True).start()
+    return {"status": "started", "bottle": bottle, "exe_path": exe_path, "create_shortcut": create_shortcut}
 
-    try:
-        subprocess.run(
-            ["flatpak", "run", "--command=wine", "com.usebottles.bottles", "wineboot", "--repair"],
-            env=env,
-            capture_output=True,
-            timeout=60,
-            check=False
-        )
-        print(f"[MCP] Sanitization complete")
-    except Exception as e:
-        print(f"[WARN] Sanitization failed: {e}")
-
-
-# ==============================================================================
-# MCP PROTOCOL ENDPOINTS
-# ==============================================================================
-
+# ------------------------------------------------------------------
+# JSON-RPC MCP Protocol
+# ------------------------------------------------------------------
 @app.post("/")
-async def handle_mcp_request(request: Request):
+async def handle(request: Request):
     body = await request.json()
     method, req_id = body.get("method"), body.get("id")
-    print(f"[DEBUG] MCP Request: method={method}, id={req_id}")
 
-    # ---- initialize ------------------------------------------------
     if method == "initialize":
-        return {"jsonrpc": "2.0", "id": req_id,
-                "result": {"protocolVersion": "2024-11-05",
-                           "serverInfo": {"name": "BottleAutomator", "version": "2.1.0"},
-                           "capabilities": {"tools": {}, "resources": {}, "prompts": {}}}}
+        return {
+            "jsonrpc": "2.0",
+            "id": req_id,
+            "result": {
+                "protocolVersion": "2024-11-05",
+                "serverInfo": {"name": "BottleAutomator", "version": "4.0.0"},
+                "capabilities": {"tools": {}, "resources": {}, "prompts": {}}
+            }
+        }
 
-    # ---- tools/list ------------------------------------------------
     if method == "tools/list":
-        return {"jsonrpc": "2.0", "id": req_id,
-                "result": {"tools": [
-                    {"name": "bottles_installer",
-                     "description": "Create bottle, scan deps, install (bg)",
-                     "inputSchema": {"type": "object",
-                                     "properties": {"program_path": {"type": "string"},
-                                                    "bottle_name": {"type": "string"}},
-                                     "required": ["program_path", "bottle_name"]}},
-                    {"name": "analyze_dependencies",
-                     "description": "Scan PE file for DLL deps (dry-run)",
-                     "inputSchema": {"type": "object",
-                                     "properties": {"program_path": {"type": "string"}},
-                                     "required": ["program_path"]}},
-                    {"name": "bottles_install_deps",
-                     "description": "Scan & install deps into existing bottle (bg)",
-                     "inputSchema": {"type": "object",
-                                     "properties": {"program_path": {"type": "string"},
-                                                    "bottle_name": {"type": "string"}},
-                                     "required": ["program_path", "bottle_name"]}}
-                ]}}
+        return {
+            "jsonrpc": "2.0",
+            "id": req_id,
+            "result": {
+                "tools": [
+                    {
+                        "name": "bottles_installer",
+                        "description": "Full installation using Bottles (EXE or ISO).",
+                        "inputSchema": {
+                            "type": "object",
+                            "properties": {
+                                "program_path": {"type": "string"},
+                                "bottle_name": {"type": "string"}
+                            },
+                            "required": ["program_path", "bottle_name"]
+                        }
+                    },
+                    {
+                        "name": "bottles_folder_installer",
+                        "description": "Copies a host folder into a new or existing bottle, scans for EXEs, and prepares candidates for dependency installation and shortcut creation.",
+                        "inputSchema": {
+                            "type": "object",
+                            "properties": {
+                                "host_folder": {"type": "string"},
+                                "bottle_name": {"type": "string"},
+                                "target_subdir": {"type": "string"}
+                            },
+                            "required": ["host_folder", "bottle_name"]
+                        }
+                    }
+                ]
+            }
+        }
 
-    # ---- tools/call ------------------------------------------------
     if method in ("call", "tools/call"):
         params = body.get("params", {})
-        tool_name = params.get("name") or params.get("toolName")
+        tool = params.get("name") or params.get("toolName")
+        if isinstance(tool, list) and tool:
+            tool = str(tool[0]) if tool[0] else ""
         args = params.get("arguments") or params
 
-        # ---------- bottles_installer ------------------------------
-        if tool_name == "bottles_installer":
-            program_path = args.get("program_path") or args.get("exe_path")
-            bottle_name = args.get("bottle_name")
-
-            # normalizing List -> str
-            if isinstance(program_path, list):
-                program_path = program_path[0] if program_path else ""
-            if isinstance(bottle_name, list):
-                bottle_name = bottle_name[0] if bottle_name else ""
-
-            if not program_path or not bottle_name:
-                return {"jsonrpc": "2.0", "id": req_id,
-                        "error": {"code": -32602, "message": "program_path and bottle_name required"}}
-
-            if not create_bottle(bottle_name):
-                return {"jsonrpc": "2.0", "id": req_id,
-                        "error": {"code": -32000, "message": "Failed to create bottle"}}
+        if tool == "bottles_installer":
+            exe, bottle = args.get("program_path"), args.get("bottle_name")
+            if not exe or not bottle:
+                return {"jsonrpc": "2.0", "id": req_id, "error": {"code": -32602, "message": "program_path and bottle_name required"}}
 
             def bg():
-                sanitize_bottle_env(bottle_name)
-                for c in ["dxvk", "vcrun2019", "d3dx9"]:
-                    install_bottle_dependency(bottle_name, c)
-                res = run_wine_dependency_solver(program_path, bottle_name)
-                if res["success"]:
-                    for d in sorted({*res["dependencies"]}):
-                        install_bottle_dependency(bottle_name, d)
+                exe_input = args.get("program_path")
+                bottle = args.get("bottle_name")
+                actual_exe = None
+
+                try:
+                    if Path(exe_input).suffix.lower() == ".iso":
+                        log_status(bottle, f"[MCP] Detected ISO file: {exe_input}")
+                        if not prefix_path(bottle).exists():
+                            if not create_bottle(bottle):
+                                return
+                        else:
+                            log_status(bottle, f"[MCP] Using existing bottle: {bottle}")
+
+                        installer_dest = prefix_path(bottle) / "drive_c" / "installer"
+                        installer_dest.mkdir(parents=True, exist_ok=True)
+
+                        with mount_iso(exe_input, target_dir=installer_dest) as mount_point:
+                            setup_exe = find_setup_exe_in_iso(mount_point)
+                            if not setup_exe:
+                                log_status(bottle, f"[ERROR] No setup/install EXE found in ISO: {exe_input}")
+                                return
+                            actual_exe = str(setup_exe)
+
+                            res = scan_deps_wine(
+                                program=actual_exe,
+                                wineprefix=str(prefix_path(bottle)),
+                                wine_cmd=WINE_CMD,
+                                timeout=10
+                            )
+                            if not res["success"]:
+                                log_status(bottle, "[MCP] Falling back to static scan")
+                                res = scan_deps_static(program=actual_exe, winedump_cmd=WINEDUMP)
+
+                            for dep in sorted(set(res.get("dependencies", []))):
+                                install_dep(bottle, dep)
+
+                    else:
+                        actual_exe = exe_input
+                        if not create_bottle(bottle):
+                            return
+
+                        exe_path = Path(actual_exe)
+                        if not exe_path.is_relative_to(prefix_path(bottle)):
+                            temp_dest = prefix_path(bottle) / "drive_c" / "temp_installer"
+                            temp_dest.mkdir(parents=True, exist_ok=True)
+                            exe_name = exe_path.name
+                            target_exe = temp_dest / exe_name
+                            shutil.copy(exe_path, target_exe)
+                            actual_exe = str(target_exe)
+
+                        res = scan_deps_wine(
+                            program=actual_exe,
+                            wineprefix=str(prefix_path(bottle)),
+                            wine_cmd=WINE_CMD,
+                            timeout=10
+                        )
+                        if not res["success"]:
+                            log_status(bottle, "[MCP] Falling back to static scan")
+                            res = scan_deps_static(program=actual_exe, winedump_cmd=WINEDUMP)
+
+                        for dep in sorted(set(res.get("dependencies", []))):
+                            install_dep(bottle, dep)
+
+                    host_exe_path = Path(actual_exe)
+                    log_status(bottle, f"[MCP] Running installer via Bottles: {host_exe_path}")
+                    run_setup_in_bottle(bottle, host_exe_path)
+
+                    candidates = enumerate_and_score_exes(bottle, top_n=10)
+                    BOTTLE_STATUS[bottle]["candidates"] = candidates
+                    log_status(bottle, f"[MCP] Found {len(candidates)} EXE candidates after install")
+                    log_status(bottle, f"[MCP] Background process for bottle '{bottle}' completed.")
+
+                except Exception as e:
+                    log_status(bottle, f"[FATAL] Exception in background task: {e}")
+
             threading.Thread(target=bg, daemon=True).start()
-            return {"jsonrpc": "2.0", "id": req_id,
-                    "result": {"content": f"Bottle '{bottle_name}' created – setup running in background",
-                               "contentType": "text/plain"}}
+            return {
+                "jsonrpc": "2.0",
+                "id": req_id,
+                "result": {
+                    "content": [
+                        {
+                            "type": "text",
+                            "text": f"Bottle '{bottle}' created – setup running in background. Call /candidates/{bottle} to see EXE candidates after install."
+                        }
+                    ]
+                }
+            }
 
-        # ---------- analyze_dependencies ---------------------------
-        if tool_name == "analyze_dependencies":
-            program_path = args.get("program_path", "")
-            if isinstance(program_path, list):
-                program_path = program_path[0] if program_path else ""
+        if tool == "bottles_folder_installer":
+            host_folder = args.get("host_folder")
+            bottle = args.get("bottle_name")
+            target_subdir = args.get("target_subdir") or Path(host_folder).name
+            target_subdir = target_subdir.replace(" ", "-")
 
-            res = analyze_dependencies_static(program_path)
-            if not res["success"] or not res["dependencies"]:
-                res = run_wine_dependency_solver(program_path, "temp_analysis")
-
-            if res["success"]:
-                deps = res.get("dependencies", [])
-                return {"jsonrpc": "2.0", "id": req_id,
-                        "result": {"content": f"Found {len(deps)} dependencies:\n" + "\n".join(deps),
-                                   "contentType": "text/plain"}}
-            return {"jsonrpc": "2.0", "id": req_id,
-                    "error": {"code": -32000, "message": res.get("error", "unknown error")}}
-
-        # ---------- bottles_install_deps ---------------------------
-        if tool_name == "bottles_install_deps":
-            program_path = args.get("program_path") or args.get("exe_path")
-            bottle_name = args.get("bottle_name")
-
-            # Normalisierung: List -> str
-            if isinstance(program_path, list):
-                program_path = program_path[0] if program_path else ""
-            if isinstance(bottle_name, list):
-                bottle_name = bottle_name[0] if bottle_name else ""
-
-            if not program_path or not bottle_name:
-                return {"jsonrpc": "2.0", "id": req_id,
-                        "error": {"code": -32602, "message": "program_path and bottle_name required"}}
+            if not host_folder or not bottle:
+                return {"jsonrpc": "2.0", "id": req_id, "error": {"code": -32602, "message": "host_folder and bottle_name required"}}
 
             def bg():
-                res = analyze_dependencies_static(program_path)
-                if not res.get("dependencies"):
-                    res = run_wine_dependency_solver(program_path, bottle_name)
-                if res["success"]:
-                    for d in sorted({*res["dependencies"]}):
-                        install_bottle_dependency(bottle_name, d)
+                try:
+                    if not prefix_path(bottle).exists():
+                        if not create_bottle(bottle):
+                            log_status(bottle, "[ERROR] Failed to create bottle")
+                            return
+
+                    if not copy_folder_to_bottle(bottle, host_folder, target_subdir):
+                        log_status(bottle, "[ERROR] Folder copy failed")
+                        return
+
+                    BOTTLE_STATUS[bottle]["subpath"] = target_subdir
+                    candidates = enumerate_and_score_exes(bottle, top_n=10, subpath=target_subdir)
+                    BOTTLE_STATUS[bottle]["candidates"] = candidates
+                    log_status(bottle, f"[MCP] Found {len(candidates)} EXE candidates after folder copy")
+
+                except Exception as e:
+                    log_status(bottle, f"[FATAL] Exception in bottles_folder_installer: {e}")
+
             threading.Thread(target=bg, daemon=True).start()
-            return {"jsonrpc": "2.0", "id": req_id,
-                    "result": {"content": f"Scan started for '{program_path}'",
-                               "contentType": "text/plain"}}
+            return {
+                "jsonrpc": "2.0",
+                "id": req_id,
+                "result": {
+                    "content": [{
+                        "type": "text",
+                        "text": f"Folder '{host_folder}' copied to bottle '{bottle}'. Call /candidates/{bottle} to choose EXE for dependency scan and shortcut creation."
+                    }]
+                }
+            }
 
-        # ---------- unknown tool -------------------------------
-        return {"jsonrpc": "2.0", "id": req_id,
-                "error": {"code": -32601, "message": f"Tool not found: {tool_name}"}}
+        return {"jsonrpc": "2.0", "id": req_id, "error": {"code": -32601, "message": f"Tool not found: {tool}"}}
 
-    # ---- unknown method ---------------------------------------
-    return {"jsonrpc": "2.0", "id": req_id,
-            "error": {"code": -32601, "message": f"Method not supported: {method}"}}
-
+    return {"jsonrpc": "2.0", "id": req_id, "error": {"code": -32601, "message": f"Method not supported: {method}"}}
 
 @app.get("/")
 async def root():
-    """Health check endpoint."""
     return {
         "name": "BottleAutomator",
-        "version": "2.0.0",
+        "version": "4.0.0",
+        "installation_type": INSTALL_TYPE,
         "status": "ready"
     }
-
 
 if __name__ == "__main__":
     import uvicorn

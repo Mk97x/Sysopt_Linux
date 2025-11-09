@@ -9,6 +9,8 @@ load_dotenv()
 LLM_API_KEY = os.getenv("LLM_API_KEY")
 IP = os.getenv("IP")
 
+
+
 class LLMClient:
     """
     A client for interacting with the AnythingLLM API.
@@ -108,7 +110,7 @@ class LLMClient:
         response = None  # <- Definiere `response` außerhalb des try-Blocks
 
         try:
-            response = requests.post(self.api_url, json=payload, headers=headers, timeout=120)
+            response = requests.post(self.api_url, json=payload, headers=headers, timeout=300)
             response.raise_for_status()
 
             # DEBUG: Print the raw response before parsing JSON

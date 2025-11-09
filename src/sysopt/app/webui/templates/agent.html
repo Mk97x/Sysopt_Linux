@@ -23,101 +23,217 @@
 
         <main>
             <div class="card">
-                <h3>💬 Ask Security Questions</h3>
+                <h3>Install with Bottles</h3>
                 <div class="chat-container">
                     <div id="chat-messages" class="chat-messages">
                         <div class="message bot-message">
-                            <strong>AI Agent:</strong> Hello! I'm your security assistant. Ask me about system vulnerabilities, optimization tips, or security best practices.
+                            <strong>AI Agent:</strong> Hello! I'm your Bottles helper. Tell me what you'd like to install or analyze.
                         </div>
                     </div>
                     <div class="chat-input">
-                        <form id="chat-form">
-                            <input type="text" id="user-input" placeholder="Ask about security..." required>
-                            <button type="submit">Send</button>
+                        <!-- LLM+MCP workflow -->
+                        <form id="chat-form-llm-mcp">
+                            <input type="text" id="user-input-llm-mcp" placeholder="Describe your Bottles task..." required>
+                            <button type="submit">Send to LLM+MCP</button>
+                        </form>
+                        <!-- Fetch candidates -->
+                        <form id="candidates-form" style="margin-top: 10px; display: flex; gap: 0.5rem;">
+                            <input type="text" id="candidates-bottle-input" placeholder="Bottle name for candidates..." required>
+                            <button type="button" id="fetch-candidates-btn">Fetch Candidates</button>
                         </form>
                     </div>
                 </div>
             </div>
 
+            <!-- Optional: Quick Prompts-->
+            
+            <!--
             <div class="card">
-                <h3>Quick Security Prompts</h3>
+                <h3>Quick Prompts</h3>
                 <div class="quick-prompts">
-                    <button onclick="sendQuickPrompt('What are the security risks of running too many systemd services?')">Security risks of many services</button>
-                    <button onclick="sendQuickPrompt('How can I optimize my system memory usage?')">Memory optimization tips</button>
-                    <button onclick="sendQuickPrompt('What ports should I close for better security?')">Port security recommendations</button>
-                    <button onclick="sendQuickPrompt('How to secure autostart applications?')">Autostart security</button>
+                    <button onclick="sendQuickPrompt('Install Hogs of War from /mnt/data/PROJEKT/...')">Install Hogs of War</button>
+                    <button onclick="sendQuickPrompt('Set up F.E.A.R Platinum Collection')">Install F.E.A.R</button>
                 </div>
             </div>
+            -->
         </main>
-    </div>
 
     <script>
-        async function sendQuickPrompt(prompt) {
-            document.getElementById('user-input').value = prompt;
-            await sendMessage(prompt);
-        }
+        // ========== LLM + MCP Workflow ==========
+        async function sendMessageToLLMAndMCP(userMessage) {
+            const chatBox = document.getElementById('chat-messages');
+            const userMsg = document.createElement('div');
+            userMsg.className = 'message user-message';
+            userMsg.innerHTML = `<strong>You (LLM+MCP):</strong> ${userMessage}`;
+            chatBox.appendChild(userMsg);
+            chatBox.scrollTop = chatBox.scrollHeight;
 
-        async function sendMessage(userMessage) {
-            const chatMessages = document.getElementById('chat-messages');
-            
-            // Add user message
-            const userDiv = document.createElement('div');
-            userDiv.className = 'message user-message';
-            userDiv.innerHTML = `<strong>You:</strong> ${userMessage}`;
-            chatMessages.appendChild(userDiv);
-
-            // Clear input
-            document.getElementById('user-input').value = '';
-
-            // Show loading
-            const loadingDiv = document.createElement('div');
-            loadingDiv.className = 'message bot-message';
-            loadingDiv.id = 'loading-message';
-            loadingDiv.innerHTML = '<strong>AI Agent:</strong> Thinking...';
-            chatMessages.appendChild(loadingDiv);
-
-            chatMessages.scrollTop = chatMessages.scrollHeight;
+            const loading = document.createElement('div');
+            loading.className = 'message bot-message';
+            loading.id = 'llm-mcp-loading';
+            loading.innerHTML = '<strong>LLM+MCP:</strong> Processing...';
+            chatBox.appendChild(loading);
+            chatBox.scrollTop = chatBox.scrollHeight;
 
             try {
-                const response = await fetch('/api/agent/prompt', {
+                const res = await fetch('/api/agent/llm_mcp_stream', {
                     method: 'POST',
-                    headers: {
-                        'Content-Type': 'application/json',
-                    },
+                    headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({ prompt: userMessage })
                 });
 
-                const data = await response.json();
-                
-                // Remove loading message
-                document.getElementById('loading-message').remove();
+                if (!res.ok) throw new Error(`HTTP ${res.status}`);
 
-                // Add bot response
-                const botDiv = document.createElement('div');
-                botDiv.className = 'message bot-message';
-                botDiv.innerHTML = `<strong>AI Agent:</strong> ${data.response || data.error || JSON.stringify(data)}`;
-                chatMessages.appendChild(botDiv);
+                const reader = res.body.pipeThrough(new TextDecoderStream()).getReader();
+                document.getElementById('llm-mcp-loading')?.remove();
 
-            } catch (error) {
-                // Remove loading message
-                document.getElementById('loading-message').remove();
-                
-                // Add error message
-                const errorDiv = document.createElement('div');
-                errorDiv.className = 'message bot-message error';
-                errorDiv.innerHTML = `<strong>AI Agent:</strong> Error: ${error.message}`;
-                chatMessages.appendChild(errorDiv);
+                while (true) {
+                    const { done, value } = await reader.read();
+                    if (done) break;
+
+                    const lines = value.split('\n');
+                    for (const line of lines) {
+                        if (line.trim() === '') continue;
+                        if (!line.startsWith(' ')) continue;
+
+                        try {
+                            const data = JSON.parse(line.slice(1));
+                            const logDiv = document.createElement('div');
+                            logDiv.className = 'message bot-message';
+                            logDiv.innerHTML = `<strong>LLM+MCP Log:</strong> ${data.log || JSON.stringify(data)}`;
+                            chatBox.appendChild(logDiv);
+                            chatBox.scrollTop = chatBox.scrollHeight;
+                        } catch (e) {
+                            console.warn('LLM+MCP parse error:', e, line);
+                        }
+                    }
+                }
+            } catch (err) {
+                console.error('LLM+MCP stream failed:', err);
+                document.getElementById('llm-mcp-loading')?.remove();
+                const errDiv = document.createElement('div');
+                errDiv.className = 'message bot-message error';
+                errDiv.innerHTML = `<strong>LLM+MCP:</strong> Error: ${err.message || 'Unknown'}`;
+                chatBox.appendChild(errDiv);
+                chatBox.scrollTop = chatBox.scrollHeight;
             }
-
-            chatMessages.scrollTop = chatMessages.scrollHeight;
         }
 
-        document.getElementById('chat-form').addEventListener('submit', async (e) => {
+        // ========== Fetch Candidates ==========
+        async function fetchAndDisplayCandidates(bottleName) {
+            const chatBox = document.getElementById('chat-messages');
+            const loading = document.createElement('div');
+            loading.className = 'message bot-message';
+            loading.id = 'candidates-loading';
+            loading.innerHTML = `<strong>System:</strong> Fetching candidates for: ${bottleName}...`;
+            chatBox.appendChild(loading);
+            chatBox.scrollTop = chatBox.scrollHeight;
+
+            try {
+                const res = await fetch(`/api/agent/candidates/${encodeURIComponent(bottleName)}`);
+                if (!res.ok) throw new Error(`HTTP ${res.status}`);
+                const data = await res.json();
+
+                document.getElementById('candidates-loading')?.remove();
+
+                if (!data.candidates?.length) {
+                    chatBox.innerHTML += `<div class="message bot-message"><strong>System:</strong> No EXE candidates found.</div>`;
+                    return;
+                }
+
+                const container = document.createElement('div');
+                container.className = 'candidates-container';
+                container.innerHTML = `<h4>Candidates for Bottle: ${bottleName}</h4><ul id="candidate-list-ul"></ul>`;
+                const ul = container.querySelector('#candidate-list-ul');
+
+                data.candidates.forEach((cand, i) => {
+                    const li = document.createElement('li');
+                    li.className = 'candidate-item';
+                    li.innerHTML = `
+                        <label style="display: block; margin-bottom: 4px;">
+                            <input type="checkbox" class="rescan-cb" data-path="${cand.path}" />
+                            <strong>Rescan</strong> — ${cand.path}
+                            <span style="font-size: 0.85em; color: #555;">(Score: ${cand.score}, Product: ${cand.product_name || 'N/A'})</span>
+                        </label>
+                        <label style="display: block; margin-left: 20px; font-size: 0.9em;">
+                            <input type="checkbox" class="shortcut-cb" data-path="${cand.path}" />
+                            Create shortcut in Bottles UI
+                        </label>
+                    `;
+                    ul.appendChild(li);
+                });
+
+                chatBox.appendChild(container);
+
+                const btnDiv = document.createElement('div');
+                btnDiv.className = 'rescan-button-container';
+                btnDiv.innerHTML = `<button onclick="startRescanForSelected('${bottleName}')">Process Selected</button>`;
+                chatBox.appendChild(btnDiv);
+                chatBox.scrollTop = chatBox.scrollHeight;
+            } catch (err) {
+                console.error('Fetch candidates failed:', err);
+                document.getElementById('candidates-loading')?.remove();
+                chatBox.innerHTML += `<div class="message bot-message error"><strong>System:</strong> Error: ${err.message}</div>`;
+            }
+        }
+
+        // ========== Process Selected Candidates ==========
+        async function startRescanForSelected(bottleName) {
+            const rescanBoxes = document.querySelectorAll('.rescan-cb:checked');
+            if (!rescanBoxes.length) {
+                alert('Please select at least one candidate to rescan.');
+                return;
+            }
+
+            const chatBox = document.getElementById('chat-messages');
+            for (const box of rescanBoxes) {
+                const path = box.dataset.path;
+                const createShortcut = document.querySelector(`.shortcut-cb[data-path="${path}"]`)?.checked || false;
+
+                const statusDiv = document.createElement('div');
+                statusDiv.className = 'message bot-message';
+                statusDiv.innerHTML = `<strong>System:</strong> Processing: ${path}${createShortcut ? ' (+ shortcut)' : ''}`;
+                chatBox.appendChild(statusDiv);
+                chatBox.scrollTop = chatBox.scrollHeight;
+
+                try {
+                    const res = await fetch('/api/agent/choose_exe', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({
+                            bottle: bottleName,
+                            exe_path: path,
+                            create_shortcut: createShortcut
+                        })
+                    });
+                    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+                    const result = await res.json();
+                    statusDiv.innerHTML += ` → Done (${result.status})`;
+                } catch (err) {
+                    statusDiv.className += ' error';
+                    statusDiv.innerHTML += ` → Error: ${err.message}`;
+                }
+            }
+        }
+
+        // ========== Event Listeners ==========
+        document.getElementById('chat-form-llm-mcp').addEventListener('submit', (e) => {
             e.preventDefault();
-            const userInput = document.getElementById('user-input');
-            const message = userInput.value.trim();
-            if (message) {
-                await sendMessage(message);
+            const input = document.getElementById('user-input-llm-mcp');
+            const msg = input.value.trim();
+            if (msg) {
+                sendMessageToLLMAndMCP(msg);
+                input.value = '';
+            }
+        });
+
+        document.getElementById('fetch-candidates-btn').addEventListener('click', (e) => {
+            e.preventDefault();
+            const input = document.getElementById('candidates-bottle-input');
+            const name = input.value.trim();
+            if (name) {
+                fetchAndDisplayCandidates(name);
+                input.value = '';
             }
         });
     </script>
@@ -130,71 +246,88 @@
             display: flex;
             flex-direction: column;
         }
-
         .chat-messages {
             flex: 1;
             padding: 1rem;
             overflow-y: auto;
             background: #f8f9fa;
         }
-
         .message {
             margin-bottom: 1rem;
             padding: 0.5rem;
             border-radius: 5px;
         }
-
         .user-message {
             background: #e3f2fd;
             margin-left: 20%;
         }
-
         .bot-message {
             background: #f5f5f5;
             margin-right: 20%;
         }
-
         .bot-message.error {
             background: #ffebee;
             color: #c62828;
         }
-
         .chat-input {
             padding: 1rem;
             border-top: 1px solid #ddd;
             background: white;
         }
-
         .chat-input form {
             display: flex;
             gap: 0.5rem;
         }
-
         .chat-input input {
             flex: 1;
             padding: 0.5rem;
             border: 1px solid #ddd;
             border-radius: 5px;
         }
-
-        .quick-prompts {
-            display: grid;
-            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
-            gap: 1rem;
-        }
-
-        .quick-prompts button {
-            background: #764ba2;
-            color: white;
+        .chat-input button {
+            padding: 0.5rem 1rem;
             border: none;
-            padding: 0.75rem;
             border-radius: 5px;
             cursor: pointer;
-            text-align: center;
         }
-
-        .quick-prompts button:hover {
-            background: #667eea;
+        .chat-input button[type="submit"] {
+            background: #4a6fa5;
+            color: white;
+        }
+        .chat-input button[type="submit"]:hover {
+            background: #6a8fc5;
+        }
+        .candidates-container {
+            margin: 10px 0;
+            padding: 10px;
+            border: 1px solid #ccc;
+            border-radius: 5px;
+            background-color: #f9f9f9;
+        }
+        .candidates-container h4 {
+            margin-top: 0;
+        }
+        .candidates-container ul {
+            list-style: none;
+            padding-left: 0;
+        }
+        .candidates-container li.candidate-item {
+            margin-bottom: 10px;
+            padding: 6px 0;
+        }
+        .rescan-button-container {
+            margin-top: 10px;
+        }
+        .rescan-button-container button {
+            background-color: #4a90e2;
+            color: white;
+            border: none;
+            padding: 6px 12px;
+            border-radius: 4px;
+            cursor: pointer;
+        }
+        .rescan-button-container button:hover {
+            background-color: #357abd;
         }
     </style>
 </body>
