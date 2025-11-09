@@ -1,0 +1,12 @@
+#main
+flask
+flask-cors
+requests
+psutil
+python-multipart
+#mcp 
+fastapi
+uvicorn[standard]
+aiohttp
+pydantic
+tavily-python
