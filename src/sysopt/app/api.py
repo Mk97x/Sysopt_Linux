@@ -7,17 +7,9 @@ API routes for AI Agent with Bottles integration.
 - New: bottles_folder_installer for copying host folders into bottles
 """
 
-import time
-import os
-import json
-import subprocess
-import threading
-import tempfile
-import traceback
-import re
-import requests
-
-from flask import Blueprint, jsonify, request, Response, stream_with_context
+import sys, shutil, time, os, subprocess, json, threading, tempfile, traceback, requests, re 
+from pathlib import Path
+from flask import Blueprint, jsonify, request, Response, stream_with_context, render_template
 
 # Internal scanners
 from .scanner.ram_cpu import top_memory_processes
@@ -178,6 +170,10 @@ def agent_choose_exe():
         return jsonify(resp.json())
     except Exception as e:
         return jsonify({"error": str(e)}), 500
+
+
+
+
 
 # ------------------------------------------------------------------
 # LLM + MCP Streaming Workflow 

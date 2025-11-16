@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import uuid
+import yaml
 import os
 import subprocess
 import time
@@ -50,7 +52,6 @@ WINEDUMP = CMD["winedump"]
 WINESERVER = CMD["wineserver"]
 INSTALL_TYPE = CMD["type"]
 
-## Todo##
 PREFIX_BASE = "/mnt/data"
 
 
@@ -59,7 +60,9 @@ def map_dll(dll: str) -> Optional[str]:
     return DLL_MAP.get(dll.lower())
 
 def prefix_path(name: str) -> Path:
-    return Path(PREFIX_BASE) / name
+    """Converts bottle name to a filesystem-safe path (replaces spaces with dashes)."""
+    safe_name = name.replace(" ", "-")
+    return Path(PREFIX_BASE) / safe_name
 
 # ------------------------------------------------------------------
 # Global Status Tracker 
@@ -144,41 +147,52 @@ def copy_folder_to_bottle(bottle: str, src: str, target_subdir: str) -> bool:
         return False
 
 # ------------------------------------------------------------------
-# Shortcut Creation (with correct context)
+# Shortcut Creation 
 # ------------------------------------------------------------------
+
 def create_shortcut_in_bottle(bottle: str, exe_path: Path):
-    prefix = prefix_path(bottle)
-    if not exe_path.is_relative_to(prefix):
-        log_status(bottle, f"[ERROR] EXE not inside bottle: {exe_path}")
+    prefix = prefix_path(bottle)  # Deine Funktion, die /mnt/data/FEAR zurückgibt
+    bottles_yaml = prefix / "bottle.yml"
+
+    if not bottles_yaml.exists():
+        log_status(bottle, f"[ERROR] bottles.yaml not found: {bottles_yaml}")
         return False
 
-    rel_path = exe_path.relative_to(prefix)
-    shortcut_path = str(rel_path)
-    if shortcut_path.startswith("drive_c/"):
-        shortcut_path = shortcut_path[8:]
-
-    env = os.environ.copy()
-    env["WINEPREFIX"] = str(prefix)
-    working_dir = prefix / "drive_c"
-
-    log_status(bottle, f"[DEBUG] Creating shortcut in cwd={working_dir} with path='{shortcut_path}'")
-
     try:
-        cmd = BOTTLES_CLI + ["add", "-b", bottle, "-n", exe_path.stem, "-p", shortcut_path]
-        result = subprocess.run(
-            cmd,
-            env=env,
-            cwd=working_dir,
-            capture_output=True,
-            text=True,
-            timeout=30
-        )
-        if result.returncode == 0:
-            log_status(bottle, f"[MCP] Shortcut created: {exe_path.stem}")
-            return True
-        else:
-            log_status(bottle, f"[ERROR] Shortcut failed: {result.stderr.strip()}")
-            return False
+        # YAML load
+        with open(bottles_yaml) as f:
+            data = yaml.safe_load(f) or {}
+
+        # create External_Programs if needed
+        if "External_Programs" not in data:
+            data["External_Programs"] = {}
+
+        shortcut_id = str(uuid.uuid4())
+
+        # absolute path
+        abs_exe_path = exe_path.resolve()
+        abs_folder = abs_exe_path.parent
+
+        # Shortcut entry
+        data["External_Programs"][shortcut_id] = {
+            "id": shortcut_id,
+            "name": exe_path.stem,
+            "executable": exe_path.name,
+            "folder": str(abs_folder),
+            "path": str(abs_exe_path),
+            "dxvk": True,
+            "vkd3d": True,
+            "virtual_desktop": True,
+            "icon": "com.usebottles.bottles-program"
+        }
+
+        
+        with open(bottles_yaml, "w") as f:
+            yaml.dump(data, f, default_flow_style=False, allow_unicode=True)
+
+        log_status(bottle, f"[MCP] Created external shortcut: {exe_path.stem}")
+        return True
+
     except Exception as e:
-        log_status(bottle, f"[ERROR] Exception in shortcut creation: {e}")
+        log_status(bottle, f"[ERROR] Failed to create shortcut in bottles.yaml: {e}")
         return False

@@ -1,0 +1,163 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>SysOpt - Setup</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            margin: 0;
+            padding: 20px;
+            background-color: #f0f0f0;
+        }
+        .container {
+            max-width: 600px;
+            margin: 0 auto;
+            background-color: white;
+            padding: 20px;
+            border-radius: 5px;
+            box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+        }
+        h1 {
+            text-align: center;
+            color: #333;
+            margin-bottom: 20px;
+        }
+        .form-group {
+            display: flex;
+            flex-direction: column;
+            margin-bottom: 15px;
+        }
+        label {
+            font-weight: bold;
+            margin-bottom: 5px;
+            color: #555;
+        }
+        input[type="text"],
+        input[type="number"] {
+            padding: 8px;
+            border: 1px solid #ccc;
+            border-radius: 3px;
+            font-size: 14px;
+        }
+        input:focus {
+            border-color: #4a90e2;
+            outline: none;
+        }
+        button {
+            padding: 10px 15px;
+            background-color: #4a90e2;
+            color: white;
+            border: none;
+            border-radius: 3px;
+            cursor: pointer;
+            font-size: 16px;
+            margin-top: 10px;
+        }
+        button:hover {
+            background-color: #357abd;
+        }
+        .error {
+            color: red;
+            font-size: 12px;
+            margin-top: 5px;
+        }
+        .success {
+            color: green;
+            font-size: 12px;
+            margin-top: 5px;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>SysOpt - Service Configuration</h1>
+        <form id="configForm">
+            <div class="form-group">
+                <label for="installDir">Install Directory (PREFIX):</label>
+                <input type="text" id="installDir" name="PREFIX" value="{{ config.PREFIX }}" placeholder="/path/to/bottles/prefixes" required>
+            </div>
+
+            <div class="form-group">
+                <label for="ollamaHost">Ollama Host:</label>
+                <input type="text" id="ollamaHost" name="OLLAMA_HOST" value="{{ config.OLLAMA_HOST }}" placeholder="localhost">
+            </div>
+
+            <div class="form-group">
+                <label for="ollamaPort">Ollama Port:</label>
+                <input type="number" id="ollamaPort" name="OLLAMA_PORT" value="{{ config.OLLAMA_PORT }}" min="1" max="65535">
+            </div>
+
+            <div class="form-group">
+                <label for="ollamaModel">Ollama Model (required):</label>
+                <input type="text" id="ollamaModel" name="OLLAMA_MODEL" value="{{ config.OLLAMA_MODEL }}" placeholder="e.g., llama3.2" required>
+            </div>
+
+            <div class="form-group">
+                <label for="mcpServerIp">MCP Server IP:</label>
+                <input type="text" id="mcpServerIp" name="MCP_SERVER_IP" value="{{ config.MCP_SERVER_IP }}" placeholder="127.0.0.1">
+            </div>
+
+            <div class="form-group">
+                <label for="mcpServerPort">MCP Server Port:</label>
+                <input type="number" id="mcpServerPort" name="MCP_SERVER_PORT" value="{{ config.MCP_SERVER_PORT }}" min="1" max="65535">
+            </div>
+
+            <div class="form-group">
+                <label for="webUiPort">WebUI Port:</label>
+                <input type="number" id="webUiPort" name="WEBUI_PORT" value="{{ config.WEBUI_PORT }}" min="1" max="65535">
+            </div>
+
+            <button type="submit">Save Configuration and Restart</button>
+        </form>
+        <div id="message"></div>
+    </div>
+
+    <script>
+    document.getElementById('configForm').addEventListener('submit', async (e) => {
+        e.preventDefault();
+        const form = e.target;
+        const formData = new FormData(form);
+        const config = Object.fromEntries(formData.entries());
+
+        // Convert port fields to numbers
+        config.OLLAMA_PORT = parseInt(config.OLLAMA_PORT);
+        config.MCP_SERVER_PORT = parseInt(config.MCP_SERVER_PORT);
+        config.WEBUI_PORT = parseInt(config.WEBUI_PORT);
+
+        const messageDiv = document.getElementById('message');
+        messageDiv.textContent = "Saving configuration and restarting...";
+        messageDiv.className = "success";
+
+        try {
+            const response = await fetch('/save_config_and_start', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                },
+                body: JSON.stringify(config)
+            });
+
+            const result = await response.json();
+            if (response.ok) {
+                messageDiv.textContent = result.message || "Restarting... Please wait.";
+                messageDiv.className = "success";
+                setTimeout(() => {
+                    window.location.reload();
+                }, 2000);
+            } else {
+                messageDiv.textContent = result.error || "Failed to save.";
+                messageDiv.className = "error";
+            }
+        } catch (error) {
+            console.error('Error:', error);
+            messageDiv.textContent = "Restart in progress... Reloading soon.";
+            setTimeout(() => {
+                window.location.reload();
+            }, 3000);
+        }
+    });
+    </script>
+</body>
+</html>

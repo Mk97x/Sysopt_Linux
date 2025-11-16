@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
 """
-Bottles-MCP-Server v4
+Bottles-MCP-Server v5
 - Deterministic EXE enumeration & scoring (now scoped to subpath)
 - Candidates limited to relevant game folder 
-- Shortcut creation via bottles-cli in correct context (cwd=drive_c + WINEPREFIX)
+- Shortcut creation via YAML for folder_installer only (bottles_installer uses built-in shortcuts)
 - New tool: bottles_folder_installer for pre-installed folders
 - Robust error handling and logging
-- Live Feedback via Ollama API
+- Live Feedback via Ollama API (still worked on)
 """
 
 from __future__ import annotations
@@ -131,8 +131,14 @@ async def agent_choose_exe(payload: Request):
             else:
                 log_status(bottle, "[MCP] No dependencies detected")
 
+            # Only create shortcut if source was folder_installer
             if create_shortcut:
-                create_shortcut_in_bottle(bottle, exe_p)
+                source = BOTTLE_STATUS[bottle].get("source")
+                if source == "folder_installer":
+                    create_shortcut_in_bottle(bottle, exe_p)
+                    log_status(bottle, f"[MCP] Created manual shortcut (folder_installer context)")
+                else:
+                    log_status(bottle, f"[MCP] Skipped shortcut (standard installer – Bottles handles it)")
 
             log_status(bottle, f"[MCP] Completed processing for {exe_p}")
 
@@ -156,7 +162,7 @@ async def handle(request: Request):
             "id": req_id,
             "result": {
                 "protocolVersion": "2024-11-05",
-                "serverInfo": {"name": "BottleAutomator", "version": "4.0.0"},
+                "serverInfo": {"name": "BottleAutomator", "version": "5.0.0"},
                 "capabilities": {"tools": {}, "resources": {}, "prompts": {}}
             }
         }
@@ -185,9 +191,9 @@ async def handle(request: Request):
                         "inputSchema": {
                             "type": "object",
                             "properties": {
-                                "host_folder": {"type": "string"},
-                                "bottle_name": {"type": "string"},
-                                "target_subdir": {"type": "string"}
+                                "host_folder": {"type": "string", "description": "Absolute path to the folder on the host (e.g., '/mnt/data/PROJEKT/Game')"},
+                                "bottle_name": {"type": "string", "description": "Name of the bottle to create or use"},
+                                "target_subdir": {"type": "string", "description": "Optional subdirectory inside drive_c (defaults to folder name)"}
                             },
                             "required": ["host_folder", "bottle_name"]
                         }
@@ -278,6 +284,8 @@ async def handle(request: Request):
 
                     candidates = enumerate_and_score_exes(bottle, top_n=10)
                     BOTTLE_STATUS[bottle]["candidates"] = candidates
+                    # Mark source as installer (not folder_installer)
+                    BOTTLE_STATUS[bottle]["source"] = "installer"
                     log_status(bottle, f"[MCP] Found {len(candidates)} EXE candidates after install")
                     log_status(bottle, f"[MCP] Background process for bottle '{bottle}' completed.")
 
@@ -303,7 +311,7 @@ async def handle(request: Request):
             bottle = args.get("bottle_name")
             target_subdir = args.get("target_subdir") or Path(host_folder).name
             target_subdir = target_subdir.replace(" ", "-")
-
+            log_status(bottle, "[MCP] Folder copy started")
             if not host_folder or not bottle:
                 return {"jsonrpc": "2.0", "id": req_id, "error": {"code": -32602, "message": "host_folder and bottle_name required"}}
 
@@ -313,12 +321,13 @@ async def handle(request: Request):
                         if not create_bottle(bottle):
                             log_status(bottle, "[ERROR] Failed to create bottle")
                             return
-
+                    log_status(bottle, f"[MCP] Started copying folder into bottle. This may take a while.")
                     if not copy_folder_to_bottle(bottle, host_folder, target_subdir):
                         log_status(bottle, "[ERROR] Folder copy failed")
                         return
 
                     BOTTLE_STATUS[bottle]["subpath"] = target_subdir
+                    BOTTLE_STATUS[bottle]["source"] = "folder_installer"  # Mark source as folder installer
                     candidates = enumerate_and_score_exes(bottle, top_n=10, subpath=target_subdir)
                     BOTTLE_STATUS[bottle]["candidates"] = candidates
                     log_status(bottle, f"[MCP] Found {len(candidates)} EXE candidates after folder copy")
@@ -346,7 +355,7 @@ async def handle(request: Request):
 async def root():
     return {
         "name": "BottleAutomator",
-        "version": "4.0.0",
+        "version": "5.0.0",
         "installation_type": INSTALL_TYPE,
         "status": "ready"
     }

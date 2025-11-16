@@ -4,9 +4,10 @@ flask-cors
 requests
 psutil
 python-multipart
+python-dotenv
 #mcp 
 fastapi
 uvicorn[standard]
 aiohttp
 pydantic
-tavily-python
+pyyaml
