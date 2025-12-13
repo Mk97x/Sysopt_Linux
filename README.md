@@ -1,11 +1,11 @@
----
+
 
 # 🧠 SysOpt – AI-Powered Windows Software Installer for Linux (via Bottles)
 
 > **Install Windows apps and games on Linux with natural language — no Wine knowledge required.**  
 > AI-driven automation with Ollama, Bottles, and MCP — powered by your local LLM.
 
----
+
 
 ## ✨ Core Features
 
@@ -229,9 +229,6 @@ sysopt/
 Built by **Mk97x**  
 For questions or suggestions: open an [Issue](https://github.com/yourusername/sysopt/issues)
 
-> ✨ **SysOpt turns natural language into working Windows apps on Linux — no Wine knowledge required.**
-
----
 
 
 
